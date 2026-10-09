@@ -2,8 +2,9 @@
 Description
 -----------
 Tests of the NCMC protocol bookkeeping in the nonequilibrium samplers: custom lambda grids,
-seeding, per-move records and per-step work traces. Uses a small benzene/water box on the
-Reference platform so that runs are exactly reproducible.
+seeding, per-move records and per-step work traces. Uses a small water-free box of benzenes on the
+Reference platform, so runs are exactly reproducible and random insertions cannot clash (the
+Reference platform can crash, rather than raise, on blown-up coordinates).
 """
 
 import logging
@@ -35,11 +36,12 @@ LAMBDAS = [0.0, 0.2, 0.5, 0.75, 0.9, 1.0]
 
 @pytest.fixture(scope="module")
 def benzene_box():
-    """A 2.6 nm TIP3P box with one coupled benzene (L01) and two ghost copies."""
+    """A 2.6 nm periodic box (no solvent) with one coupled benzene (L01) at its centre and two ghost copies."""
     pdb = PDBFile(BENZENE_PDB)
-    forcefield = ForceField("tip3p.xml", BENZENE_XML)
-    modeller = Modeller(pdb.topology, pdb.positions)
-    modeller.addSolvent(forcefield, boxSize=Vec3(2.6, 2.6, 2.6) * nanometers)
+    forcefield = ForceField(BENZENE_XML)
+    xyz = np.array(pdb.positions.value_in_unit(nanometers))
+    modeller = Modeller(pdb.topology, Quantity(xyz - xyz.mean(axis=0) + 1.3, nanometers))
+    modeller.topology.setPeriodicBoxVectors([Vec3(2.6, 0, 0), Vec3(0, 2.6, 0), Vec3(0, 0, 2.6)] * nanometers)
     topology, positions, ghosts = utils.add_ghosts(
         modeller.topology, modeller.positions, molfile=BENZENE_PDB, n=2, pdb=None, rng=np.random.default_rng(5)
     )
