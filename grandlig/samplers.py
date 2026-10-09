@@ -42,6 +42,7 @@ class BaseGrandCanonicalMonteCarloSampler(object):
         dcd=None,
         rst=None,
         overwrite=False,
+        seed=None,
     ):
         """
         Initialise the object to be used for sampling insertion/deletion moves
@@ -75,6 +76,9 @@ class BaseGrandCanonicalMonteCarloSampler(object):
             Name of the restart file to write out (.pdb or .rst7)
         overwrite : bool
             Overwrite any data already present
+        seed : int or None
+            Seed for the sampler's random number generator, which makes every random choice (move type,
+            molecule, position, orientation, velocities, acceptance). Default None: unseeded
         """
         # Create logging object
         if os.path.isfile(log):
@@ -97,7 +101,8 @@ class BaseGrandCanonicalMonteCarloSampler(object):
         self.logger.addHandler(file_handler)
 
         # Set random number generator
-        self.rng = np.random.default_rng()
+        self.rng = np.random.default_rng(seed)
+        self.seed = seed
 
         # Set important variables here
         self.system = system
@@ -817,7 +822,7 @@ class BaseGrandCanonicalMonteCarloSampler(object):
             new_centre = heavy_cog
 
         #  Generate a random rotation matrix
-        R = utils.random_rotation_matrix()
+        R = utils.random_rotation_matrix(self.rng)
 
         # Scramble the molecular orientation
         new_positions = deepcopy(self.positions)
@@ -841,6 +846,18 @@ class BaseGrandCanonicalMonteCarloSampler(object):
 
         return new_positions
 
+    def drawSeed(self):
+        """
+        Draw a seed for OpenMM's own random number generators (integrator, velocities) from this
+        sampler's generator, so that a seeded sampler is fully reproducible
+
+        Returns
+        -------
+        seed : int
+            Positive 31-bit integer
+        """
+        return int(self.rng.integers(1, 2**31 - 1))
+
     def randomiseAtomVelocities(self, atom_ids):
         """
         Assign random velocities (from the Maxwell-Boltzmann) to a subset of atoms
@@ -854,7 +871,7 @@ class BaseGrandCanonicalMonteCarloSampler(object):
         temperature = self.kT / (unit.BOLTZMANN_CONSTANT_kB * unit.AVOGADRO_CONSTANT_NA)
 
         # Randomise velocities (using the OpenMM functionality)
-        self.context.setVelocitiesToTemperature(temperature)
+        self.context.setVelocitiesToTemperature(temperature, self.drawSeed())
         random_velocities = self.context.getState(getVelocities=True).getVelocities(
             asNumpy=True
         )
@@ -898,6 +915,7 @@ class GCMCSphereSampler(BaseGrandCanonicalMonteCarloSampler):
         dcd=None,
         rst=None,
         overwrite=False,
+        seed=None,
     ):
         """
         Initialise the object to be used for sampling molecule insertion/deletion moves
@@ -961,6 +979,7 @@ class GCMCSphereSampler(BaseGrandCanonicalMonteCarloSampler):
             dcd=dcd,
             rst=rst,
             overwrite=overwrite,
+            seed=seed,
         )
 
         # Initialise variables specific to the GCMC sphere
@@ -1280,12 +1299,12 @@ class GCMCSphereSampler(BaseGrandCanonicalMonteCarloSampler):
                 "No ghost molecules left, so insertion moves cannot occur - add more ghost molecules"
             )
 
-        insert_mol = np.random.choice(ghost_mols)  # Position in list of GCMC molecules
+        insert_mol = self.rng.choice(ghost_mols)  # Position in list of GCMC molecules
 
         # Select a point to insert the molecule (based on O position)
-        rand_nums = np.random.randn(3)
+        rand_nums = self.rng.standard_normal(3)
         insert_point = self.sphere_centre + (
-            self.sphere_radius * np.power(np.random.rand(), 1.0 / 3) * rand_nums
+            self.sphere_radius * np.power(self.rng.random(), 1.0 / 3) * rand_nums
         ) / np.linalg.norm(rand_nums)
 
         # dist_from_center, insphere = self.calcDist2Center(
@@ -1321,7 +1340,7 @@ class GCMCSphereSampler(BaseGrandCanonicalMonteCarloSampler):
             return None
 
         # Select a molecule residue to delete
-        delete_mol = np.random.choice(gcmc_mols)  # Position in list of GCMC molecules
+        delete_mol = self.rng.choice(gcmc_mols)  # Position in list of GCMC molecules
 
         # atom_indices = []  # Dont think i Need
         # all_res = list(self.topology.residues())
@@ -1499,6 +1518,7 @@ class StandardGCMCSphereSampler(GCMCSphereSampler):
         dcd=None,
         rst=None,
         overwrite=False,
+        seed=None,
     ):
         """
         Initialise the object to be used for sampling instantaneous molecule insertion/deletion moves
@@ -1567,6 +1587,7 @@ class StandardGCMCSphereSampler(GCMCSphereSampler):
             dcd=dcd,
             rst=rst,
             overwrite=overwrite,
+            seed=seed,
         )
 
         self.energy = None  # Need to save energy
@@ -1647,7 +1668,7 @@ class StandardGCMCSphereSampler(GCMCSphereSampler):
         self.tracked_variables["acceptance_probabilities"].append(acc_prob)
         self.tracked_variables["insert_acceptance_probabilities"].append(acc_prob)
 
-        if acc_prob < np.random.rand() or np.isnan(acc_prob):
+        if acc_prob < self.rng.random() or np.isnan(acc_prob):
             # Need to revert the changes made if the move is to be rejected
             # Switch off nonbonded interactions involving this molecule
             self.adjustSpecificMolecule(insert_mol, 0.0)
@@ -1692,7 +1713,7 @@ class StandardGCMCSphereSampler(GCMCSphereSampler):
         self.tracked_variables["acceptance_probabilities"].append(acc_prob)
         self.tracked_variables["delete_acceptance_probabilities"].append(acc_prob)
 
-        if acc_prob < np.random.rand() or np.isnan(acc_prob):
+        if acc_prob < self.rng.random() or np.isnan(acc_prob):
             # Switch the molecule back on if the move is rejected
             self.adjustSpecificMolecule(delete_mol, 1.0)
             self.tracked_variables["outcome"].append("rejected_deletion")
@@ -1744,6 +1765,7 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
         overwrite=False,
         maxN=999,
         recordTraj=False,
+        seed=None,
     ):
         """
         Initialise the object to be used for sampling NCMC-enhanced molecule insertion/deletion moves
@@ -1810,6 +1832,10 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
         recordTraj : bool
             User can specifiy if they want the insertion/deletion trajectories to be recorded. Note requires large amount
             of disk space.
+
+        seed : int or None
+            Seed for the sampler's random number generator. If given, the integrator is also seeded from it, so the
+            sampler must be created before the Context. Default None: unseeded
         """
         # Initialise base class
         GCMCSphereSampler.__init__(
@@ -1831,6 +1857,7 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
             dcd=dcd,
             rst=rst,
             overwrite=overwrite,
+            seed=seed,
         )
 
         # Load in extra NCMC variables
@@ -1878,6 +1905,9 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
         self.record = recordTraj
 
         self.integrator = integrator
+        if seed is not None:
+            # Takes effect for Contexts created after this point
+            self.integrator.setRandomNumberSeed(self.drawSeed())
 
         self.logger.info("NonequilibriumGCMCSphereSampler object initialised")
 
@@ -2051,7 +2081,7 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
         self.tracked_variables["insert_acceptance_probabilities"].append(acc_prob)
 
         # Update or reset the system, depending on whether the move is accepted or rejected
-        if acc_prob < np.random.rand() or np.isnan(acc_prob):
+        if acc_prob < self.rng.random() or np.isnan(acc_prob):
             if self.record:
                 os.rename(
                     self.dcd_name,
@@ -2186,7 +2216,7 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
         self.tracked_variables["delete_acceptance_probabilities"].append(acc_prob)
 
         # Update or reset the system, depending on whether the move is accepted or rejected
-        if acc_prob < np.random.rand() or np.isnan(acc_prob):
+        if acc_prob < self.rng.random() or np.isnan(acc_prob):
             # REJECT
             # if self.record:
             #     os.remove(self.dcd_name)
@@ -2279,6 +2309,7 @@ class GCMCSystemSampler(BaseGrandCanonicalMonteCarloSampler):
         createCustomForces=True,
         rst=None,
         overwrite=False,
+        seed=None,
     ):
         """
         Initialise the object to be used for sampling molecule insertion/deletion moves
@@ -2335,6 +2366,7 @@ class GCMCSystemSampler(BaseGrandCanonicalMonteCarloSampler):
             dcd=dcd,
             rst=rst,
             overwrite=overwrite,
+            seed=seed,
         )
 
         # Read in simulation box lengths
@@ -2444,10 +2476,10 @@ class GCMCSystemSampler(BaseGrandCanonicalMonteCarloSampler):
                 "No ghost molecules left, so insertion moves cannot occur - add more ghosts"
             )
 
-        insert_mol = np.random.choice(ghost_mols)  # Position in list of GCMC molecules
+        insert_mol = self.rng.choice(ghost_mols)  # Position in list of GCMC molecules
 
         # Select a point to insert the molecule (based on centre of heavy atoms)
-        insert_point = np.random.rand(3) * self.simulation_box
+        insert_point = self.rng.random(3) * self.simulation_box
         # print(insert_point)
 
         # Randomly rotate the molecule, and shift to the insertion point
@@ -2470,7 +2502,7 @@ class GCMCSystemSampler(BaseGrandCanonicalMonteCarloSampler):
             return None
 
         # Select a molecule residue to delete
-        delete_mol = np.random.choice(gcmc_mols)  # Position in list of GCMC molecules
+        delete_mol = self.rng.choice(gcmc_mols)  # Position in list of GCMC molecules
         return delete_mol
 
 
@@ -2499,6 +2531,7 @@ class StandardGCMCSystemSampler(GCMCSystemSampler):
         dcd=None,
         rst=None,
         overwrite=False,
+        seed=None,
     ):
         """
         Initialise the object to be used for sampling instantaneous molecule insertion/deletion moves
@@ -2562,6 +2595,7 @@ class StandardGCMCSystemSampler(GCMCSystemSampler):
             dcd=dcd,
             rst=rst,
             overwrite=overwrite,
+            seed=seed,
         )
 
         self.energy = None  # Need to save energy
@@ -2632,7 +2666,7 @@ class StandardGCMCSystemSampler(GCMCSystemSampler):
         self.tracked_variables["acceptance_probabilities"].append(acc_prob)
         self.tracked_variables["insert_acceptance_probabilities"].append(acc_prob)
 
-        if acc_prob < np.random.rand() or np.isnan(acc_prob):
+        if acc_prob < self.rng.random() or np.isnan(acc_prob):
             # Need to revert the changes made if the move is to be rejected
             # Switch off nonbonded interactions involving this molecule
             self.adjustSpecificMolecule(insert_mol, 0.0)
@@ -2677,7 +2711,7 @@ class StandardGCMCSystemSampler(GCMCSystemSampler):
         self.tracked_variables["acceptance_probabilities"].append(acc_prob)
         self.tracked_variables["delete_acceptance_probabilities"].append(acc_prob)
 
-        if acc_prob < np.random.rand() or np.isnan(acc_prob):
+        if acc_prob < self.rng.random() or np.isnan(acc_prob):
             # Switch the molecule back on if the move is rejected
             self.adjustSpecificMolecule(delete_mol, 1.0)
             self.tracked_variables["outcome"].append("rejected_deletion")
@@ -2726,6 +2760,7 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
         overwrite=False,
         lambdas=None,
         recordTraj=False,
+        seed=None,
     ):
         """
         Initialise the object to be used for sampling NCMC-enhanced molecule insertion/deletion moves
@@ -2780,6 +2815,9 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
             Name of the restart file to write out (.pdb or .rst7)
         overwrite : bool
             Indicates whether to overwrite already existing data
+        seed : int or None
+            Seed for the sampler's random number generator. If given, the integrator is also seeded from it, so the
+            sampler must be created before the Context. Default None: unseeded
         """
         # Initialise base class
         GCMCSystemSampler.__init__(
@@ -2799,6 +2837,7 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
             dcd=dcd,
             rst=rst,
             overwrite=overwrite,
+            seed=seed,
         )
 
         # Load in extra NCMC variables
@@ -2839,6 +2878,9 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
         self.tracked_variables["n_explosions"] = 0
 
         self.integrator = integrator
+        if seed is not None:
+            # Takes effect for Contexts created after this point
+            self.integrator.setRandomNumberSeed(self.drawSeed())
         self.record = recordTraj
 
         self.logger.info("NonequilibriumGCMCSystemSampler object initialised")
@@ -2969,7 +3011,7 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
         self.tracked_variables["insert_acceptance_probabilities"].append(acc_prob)
 
         # Update or reset the system, depending on whether the move is accepted or rejected
-        if acc_prob < np.random.rand() or np.isnan(acc_prob):
+        if acc_prob < self.rng.random() or np.isnan(acc_prob):
             # if self.record:
             #     os.rename(self.dcd_name, '{}_resi{}_rejected_insertion.dcd'.format(self.dcd_name, insert_mol))
             # Need to revert the changes made if the move is to be rejected
@@ -3051,7 +3093,7 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
         self.tracked_variables["delete_acceptance_probabilities"].append(acc_prob)
 
         # Update or reset the system, depending on whether the move is accepted or rejected
-        if acc_prob < np.random.rand() or np.isnan(acc_prob):
+        if acc_prob < self.rng.random() or np.isnan(acc_prob):
             # Need to revert the changes made if the move is to be rejected
             self.adjustSpecificMolecule(delete_mol, 1.0)
             self.context.setPositions(self.positions)

@@ -84,7 +84,7 @@ def get_data_file(filename):
 
 
 def add_ghosts(
-    topology, positions, molfile="tip3p.pdb", n=10, pdb="gcmc-extra-wats.pdb"
+    topology, positions, molfile="tip3p.pdb", n=10, pdb="gcmc-extra-wats.pdb", rng=None
 ):
     """
     Function to add molecules to a topology, as extras for GCMC
@@ -105,6 +105,8 @@ def add_ghosts(
     pdb : str
         Name of the PDB file to write containing the updated system
         This will be useful for visualising the results obtained.
+    rng : numpy.random.Generator or None
+        Generator used to place the ghosts. Default None: numpy's global random state
 
     Returns
     -------
@@ -175,8 +177,9 @@ def add_ghosts(
         positions = molecule.positions
 
         # Need to translate the molecule to a random point in the simulation box
+        rand3 = np.random.rand(3) if rng is None else rng.random(3)
         new_centre = (
-            np.matmul(np.random.rand(3), box_vectors._value) + translation._value
+            np.matmul(rand3, box_vectors._value) + translation._value
         ) * unit.nanometers
 
         new_positions = deepcopy(molecule.positions)
@@ -816,29 +819,36 @@ def get_lambda_values(lambda_in, vdw_end=0.75):
     return lambda_vdw, lambda_ele
 
 
-def random_rotation_matrix():
+def random_rotation_matrix(rng=None):
     """
     Generate a random axis and angle for rotation of the molecules coordinates (using the
     method used for this in the ProtoMS source code (www.protoms.org), and then return
     a rotation matrix produced from these
+
+    Parameters
+    ----------
+    rng : numpy.random.Generator or None
+        Generator to draw from. Default None: numpy's global random state
 
     Returns
     -------
     rot_matrix : numpy.ndarray
         Rotation matrix generated
     """
+    rand = np.random.rand if rng is None else rng.random
+
     # First generate a random axis about which the rotation will occur
     rand1 = rand2 = 2.0
 
     while (rand1**2 + rand2**2) >= 1.0:
-        rand1 = np.random.rand()
-        rand2 = np.random.rand()
+        rand1 = rand()
+        rand2 = rand()
     rand_h = 2 * np.sqrt(1.0 - (rand1**2 + rand2**2))
     axis = np.array([rand1 * rand_h, rand2 * rand_h, 1 - 2 * (rand1**2 + rand2**2)])
     axis /= np.linalg.norm(axis)
 
     # Get a random angle
-    theta = np.pi * (2 * np.random.rand() - 1.0)
+    theta = np.pi * (2 * rand() - 1.0)
 
     # Simplify products & generate matrix
     x, y, z = axis[0], axis[1], axis[2]
