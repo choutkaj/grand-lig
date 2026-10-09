@@ -1996,6 +1996,7 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
             self.tracked_variables["insert_acceptance_probabilities"].append(-1)
             self.tracked_variables["outcome"].append("site_full")
             self.tracked_variables["insert_works"].append(np.nan)
+            self.tracked_variables["move_resi"].append(None)
             return None
 
         # Choose a random site in the sphere to insert a molecule
@@ -2056,6 +2057,8 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
 
         # Check which molecules are still in the GCMC sphere
         gcmc_mols_new = self.getMolStatusResids(1)
+        # Failed moves (explosion, left sphere) record their own outcome below
+        failed = explosion or insert_mol not in gcmc_mols_new
 
         # Calculate acceptance probability
         if explosion:
@@ -2100,7 +2103,8 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
             state = self.context.getState(getPositions=True, enforcePeriodicBox=True)
             self.setMolStatus(insert_mol, 0)  # rejected so its back to being a ghost
             self.updateGCMCSphere(state)
-            self.tracked_variables["outcome"].append("rejected_insertion")
+            if not failed:
+                self.tracked_variables["outcome"].append("rejected_insertion")
         else:
             # Update some variables if move is accepted
             self.tracked_variables["accepted_insert_works"].append(protocol_work)
@@ -2190,6 +2194,8 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
         gcmc_mols_new = self.getMolStatusResids(
             1
         )  # Remeber we've left the status of delete mol as 1 so far
+        # Failed moves (explosion, left sphere) record their own outcome below
+        failed = explosion or delete_mol not in gcmc_mols_new
 
         # Calculate acceptance probability
         if explosion:
@@ -2233,7 +2239,8 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
             self.velocities = -self.velocities
             state = self.context.getState(getPositions=True, enforcePeriodicBox=True)
             self.updateGCMCSphere(state)
-            self.tracked_variables["outcome"].append("rejected_deletion")
+            if not failed:
+                self.tracked_variables["outcome"].append("rejected_deletion")
         else:
             # Update some variables if move is accepted
             self.tracked_variables["accepted_delete_works"].append(protocol_work)
@@ -2993,6 +3000,8 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
                 print("Caught explosion!")
                 explosion = True
                 self.tracked_variables["n_explosions"] += 1
+                self.tracked_variables["outcome"].append("explosion")
+                self.tracked_variables["insert_works"].append(np.nan)
                 break
 
         if explosion:
@@ -3024,7 +3033,8 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
             self.positions = deepcopy(self.positions)
             self.velocities = -self.velocities
             self.N = len(self.getMolStatusResids(1))
-            self.tracked_variables["outcome"].append("rejected_insertion")
+            if not explosion:  # explosions record their own outcome
+                self.tracked_variables["outcome"].append("rejected_insertion")
         else:
             # Update some variables if move is accepted
             self.tracked_variables["accepted_insert_works"].append(protocol_work)
@@ -3052,7 +3062,10 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
         self.tracked_variables["move_resi"].append(delete_mol)
         # Deletion may not be possible
         if delete_mol is None:
+            self.tracked_variables["acceptance_probabilities"].append(0)
+            self.tracked_variables["delete_acceptance_probabilities"].append(0)
             self.tracked_variables["outcome"].append("no_mol2del")
+            self.tracked_variables["delete_works"].append(np.nan)
             return None
 
         # Start running perturbation and propagation kernels
@@ -3075,6 +3088,7 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
                 explosion = True
                 self.tracked_variables["n_explosions"] += 1
                 self.tracked_variables["outcome"].append("explosion")
+                self.tracked_variables["delete_works"].append(np.nan)
                 break
 
         if explosion:
@@ -3103,7 +3117,8 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
             self.setMolStatus(delete_mol, 1)  # Make sure the status of this mol is 1
             self.positions = deepcopy(self.positions)
             self.velocities = -self.velocities
-            self.tracked_variables["outcome"].append("rejected_deletion")
+            if not explosion:  # explosions record their own outcome
+                self.tracked_variables["outcome"].append("rejected_deletion")
         else:
             # Update some variables if move is accepted
             self.tracked_variables["accepted_delete_works"].append(protocol_work)

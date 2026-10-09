@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from openmm import Platform, Vec3
 from openmm.app import PME, ForceField, HBonds, Modeller, PDBFile, Simulation
-from openmm.unit import kelvin, nanometers, picosecond, picoseconds
+from openmm.unit import Quantity, kelvin, nanometers, picosecond, picoseconds
 from openmmtools.integrators import BAOABIntegrator
 
 from grandlig import samplers, utils
@@ -193,3 +193,75 @@ def test_add_ghosts_with_generator():
     x0, x1 = (np.array(r[1].value_in_unit(nanometers)) for r in runs)
     np.testing.assert_array_equal(x0, x1)
     assert runs[0][2] == runs[1][2] == [1, 2, 3]
+
+
+class ExplodingIntegrator:
+    """Wraps an integrator; the n-th call to step() raises, as an unstable integration would."""
+
+    def __init__(self, integrator, fail_on_call):
+        self.integrator, self.fail_on_call, self.calls = integrator, fail_on_call, 0
+
+    def step(self, n):
+        self.calls += 1
+        if self.calls == self.fail_on_call:
+            raise RuntimeError("simulated explosion")
+        return self.integrator.step(n)
+
+
+def assert_one_record_per_move(sampler):
+    tracked = sampler.tracked_variables
+    assert len(tracked["outcome"]) == tracked["n_moves"], tracked["outcome"]
+    assert len(tracked["move_resi"]) == tracked["n_moves"]
+    assert len(tracked["acceptance_probabilities"]) == tracked["n_moves"]
+    assert len(tracked["insert_works"]) == tracked["n_inserts"]
+    assert len(tracked["delete_works"]) == tracked["n_deletes"]
+
+
+@pytest.mark.parametrize("kind", ["sphere", "system"])
+@pytest.mark.parametrize("direction", ["insertion", "deletion"])
+def test_explosion_is_recorded_once(benzene_box, tmp_path, kind, direction):
+    sampler, simulation = make_sampler(benzene_box, kind, tmp_path, platform="CPU", seed=1, nPertSteps=3)
+    sampler.integrator = ExplodingIntegrator(sampler.integrator, fail_on_call=3)
+    sampler.move(simulation.context, 1, force=direction)
+    assert sampler.tracked_variables["outcome"] == ["explosion"]
+    assert sampler.tracked_variables["n_explosions"] == 1
+    works = sampler.tracked_variables["insert_works" if direction == "insertion" else "delete_works"]
+    assert len(works) == 1 and np.isnan(works[0])
+    assert_one_record_per_move(sampler)
+
+
+def test_left_sphere_is_recorded_once(benzene_box, tmp_path):
+    # no propagation: the molecule cannot explode and stays where it was put
+    sampler, simulation = make_sampler(
+        benzene_box, "sphere", tmp_path, platform="CPU", seed=1, nPertSteps=2, nPropStepsPerPert=0
+    )
+    ghost = sampler.getMolStatusResids(0)[0]
+
+    def insert_outside():
+        # put the ghost's centre 1.2 nm from the centre of the 1.0 nm sphere
+        xyz = np.array(sampler.positions.value_in_unit(nanometers))
+        atoms, heavy = sampler.mol_atom_ids[ghost], sampler.mol_heavy_ids[ghost]
+        target = np.array(sampler.sphere_centre.value_in_unit(nanometers)) + np.array([1.2, 0.0, 0.0])
+        xyz[atoms] += target - xyz[heavy].mean(axis=0)
+        return Quantity(xyz, nanometers), ghost
+
+    sampler.insertRandomMolecule = insert_outside
+    sampler.move(simulation.context, 1, force="insertion")
+    assert sampler.tracked_variables["outcome"] == ["left_sphere"]
+    assert_one_record_per_move(sampler)
+
+
+@pytest.mark.parametrize("kind", ["sphere", "system"])
+def test_failed_deletion_is_recorded_once(benzene_box, tmp_path, kind):
+    sampler, simulation = make_sampler(benzene_box, kind, tmp_path, platform="CPU", seed=1, nPertSteps=2)
+    sampler.deleteRandomMolecule = lambda: None
+    sampler.move(simulation.context, 1, force="deletion")
+    assert sampler.tracked_variables["outcome"] == ["no_mol2del"]
+    assert_one_record_per_move(sampler)
+
+
+@pytest.mark.parametrize("kind", ["sphere", "system"])
+def test_random_moves_keep_records_aligned(benzene_box, tmp_path, kind):
+    sampler, simulation = make_sampler(benzene_box, kind, tmp_path, platform="CPU", seed=4, nPertSteps=2)
+    sampler.move(simulation.context, 6)
+    assert_one_record_per_move(sampler)
