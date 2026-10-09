@@ -692,14 +692,13 @@ def create_custom_forces(system, topology, resnames):
         custom_sterics.addParticle([sigma, epsilon, 1.0])
         # Dont get rid of the interactions in the original force yet, because we need that information for the exceptions below
 
-    # Get a dictionary of atom pairs subject to exceptions
-    exception_dict = {}
-    num_excepts = nonbonded_force.getNumExceptions()
-    for exception_idx in range(num_excepts):
+    # Get the set of atom pairs subject to exceptions (as sorted tuples, for O(1) lookup)
+    excepted_pairs = set()
+    for exception_idx in range(nonbonded_force.getNumExceptions()):
         [i, j, chargeprod, sigma, epsilon] = nonbonded_force.getExceptionParameters(
             exception_idx
         )
-        exception_dict[exception_idx] = [i, j]
+        excepted_pairs.add((min(i, j), max(i, j)))
 
     # Make sure all intramolecular interactions for the molecules of interest are set to exceptions, so they aren't switched off
     for residue in topology.residues():
@@ -709,24 +708,8 @@ def create_custom_forces(system, topology, resnames):
             # Loop over all possible interactions between atoms in this molecule
             for x, atom_x in enumerate(atom_ids):
                 for atom_y in atom_ids[x + 1 :]:
-                    # Check if there is an exception already for this interaction
-                    except_id = None
-                    """
-                    for exception_idx in range(nonbonded_force.getNumExceptions()):
-                        [i, j, chargeprod, sigma, epsilon] = nonbonded_force.getExceptionParameters(exception_idx)
-                        if atom_x in [i, j] and atom_y in [i, j]:
-                            except_id = exception_idx
-                            break
-                    """
-                    for exception_idx in range(num_excepts):
-                        if (
-                            atom_x in exception_dict[exception_idx]
-                            and atom_y in exception_dict[exception_idx]
-                        ):
-                            except_id = exception_idx
-                            break
-                    # Add an exception if there is not one already
-                    if except_id is None:
+                    # Add an exception if there is not one already for this interaction
+                    if (min(atom_x, atom_y), max(atom_x, atom_y)) not in excepted_pairs:
                         [charge_x, sigma_x, epsilon_x] = (
                             nonbonded_force.getParticleParameters(atom_x)
                         )

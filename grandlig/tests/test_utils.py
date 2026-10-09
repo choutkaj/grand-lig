@@ -754,3 +754,40 @@ class TestUtils(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_create_custom_forces_intramolecular_exceptions():
+    """
+    Every intramolecular pair of the switched residues ends up as exactly one NonbondedForce exception,
+    and the exceptions that already existed are left unchanged and in their original order
+    """
+    pdb = PDBFile(utils.get_data_file(os.path.join("tests", "WaterBenzeneWithGhosts.pdb")))
+    ff = ForceField("tip3p.xml", utils.get_data_file(os.path.join("tests", "Benzene.xml")))
+    system = ff.createSystem(pdb.topology, nonbondedMethod=PME, nonbondedCutoff=12.0 * angstroms,
+                             constraints=HBonds)
+    nonbonded = [f for f in system.getForces() if isinstance(f, NonbondedForce)][0]
+
+    def exceptions():
+        out = []
+        for k in range(nonbonded.getNumExceptions()):
+            i, j, qq, sigma, epsilon = nonbonded.getExceptionParameters(k)
+            out.append((i, j, qq._value, sigma._value, epsilon._value))
+        return out
+
+    before = exceptions()
+    utils.create_custom_forces(system, pdb.topology, ["L01"])
+    after = exceptions()
+
+    assert after[: len(before)] == before
+    pairs = [(min(i, j), max(i, j)) for i, j, *_ in after]
+    assert len(pairs) == len(set(pairs))
+
+    intramolecular = set()
+    for residue in pdb.topology.residues():
+        if residue.name == "L01":
+            ids = sorted(atom.index for atom in residue.atoms())
+            intramolecular |= {(a, b) for k, a in enumerate(ids) for b in ids[k + 1 :]}
+    assert len(intramolecular) == 5 * 66  # five benzenes, 12 atoms each
+    assert intramolecular <= set(pairs)
+    # new exceptions are only intramolecular pairs of the switched residues
+    assert set(pairs[len(before) :]) <= intramolecular
