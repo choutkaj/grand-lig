@@ -13,7 +13,15 @@ import numpy as np
 import pytest
 from openmm import Platform, Vec3
 from openmm.app import PME, ForceField, HBonds, Modeller, PDBFile, Simulation
-from openmm.unit import Quantity, kelvin, nanometers, picosecond, picoseconds
+from openmm.unit import (
+    Quantity,
+    is_quantity,
+    kelvin,
+    kilocalories_per_mole,
+    nanometers,
+    picosecond,
+    picoseconds,
+)
 from openmmtools.integrators import BAOABIntegrator
 
 from grandlig import samplers, utils
@@ -265,3 +273,47 @@ def test_random_moves_keep_records_aligned(benzene_box, tmp_path, kind):
     sampler, simulation = make_sampler(benzene_box, kind, tmp_path, platform="CPU", seed=4, nPertSteps=2)
     sampler.move(simulation.context, 6)
     assert_one_record_per_move(sampler)
+
+
+def kcal(work):
+    """Work entries are Quantities, or NaN floats for failed moves."""
+    return work.value_in_unit(kilocalories_per_mole) if is_quantity(work) else float(work)
+
+
+@pytest.mark.parametrize("kind", ["sphere", "system"])
+def test_work_trace_is_off_by_default(benzene_box, tmp_path, kind):
+    sampler, simulation = make_sampler(benzene_box, kind, tmp_path, platform="CPU", seed=1, nPertSteps=2)
+    sampler.move(simulation.context, 2)
+    assert sampler.record_work_trace is False
+    assert "work_traces" not in sampler.tracked_variables
+
+
+@pytest.mark.parametrize("kind", ["sphere", "system"])
+def test_work_trace_sums_to_protocol_work(benzene_box, tmp_path, kind):
+    sampler, simulation = make_sampler(
+        benzene_box, kind, tmp_path, lambdas=LAMBDAS, seed=2, recordWorkTrace=True
+    )
+    sampler.move(simulation.context, 1, force="deletion")
+    sampler.move(simulation.context, 1, force="insertion")
+    deletion, insertion = sampler.tracked_variables["work_traces"]
+    assert (deletion["move"], deletion["direction"]) == (0, "deletion")
+    assert (insertion["move"], insertion["direction"]) == (1, "insertion")
+    assert deletion["lambdas"] == LAMBDAS[-2::-1]
+    assert insertion["lambdas"] == LAMBDAS[1:]
+    for trace, works in ((deletion, "delete_works"), (insertion, "insert_works")):
+        total = kcal(sampler.tracked_variables[works][-1])
+        assert len(trace["work_steps"]) == len(LAMBDAS) - 1
+        if np.isfinite(total):
+            assert np.isclose(sum(trace["work_steps"]), total, rtol=1e-12, atol=1e-9)
+
+
+def test_work_trace_is_kept_for_explosions(benzene_box, tmp_path):
+    sampler, simulation = make_sampler(
+        benzene_box, "system", tmp_path, platform="CPU", seed=1, nPertSteps=4, recordWorkTrace=True
+    )
+    sampler.integrator = ExplodingIntegrator(sampler.integrator, fail_on_call=3)
+    sampler.move(simulation.context, 1, force="deletion")
+    (trace,) = sampler.tracked_variables["work_traces"]
+    # the initial propagation is call 1; the perturbations before calls 2 and 3 are recorded
+    assert len(trace["work_steps"]) == 2
+    assert sampler.tracked_variables["outcome"] == ["explosion"]

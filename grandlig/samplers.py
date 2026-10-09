@@ -846,6 +846,37 @@ class BaseGrandCanonicalMonteCarloSampler(object):
 
         return new_positions
 
+    def _startWorkTrace(self, direction, resid):
+        """
+        Start the per-step work trace of an NCMC move, if trace recording is switched on
+
+        Returns
+        -------
+        trace : dict or None
+            Trace appended to tracked_variables["work_traces"], or None if not recording
+        """
+        if not getattr(self, "record_work_trace", False):
+            return None
+        trace = {
+            "move": self.tracked_variables["n_moves"],
+            "direction": direction,
+            "resid": int(resid),
+            "lambdas": [],
+            "work_steps": [],
+        }
+        self.tracked_variables["work_traces"].append(trace)
+        return trace
+
+    def _recordWorkStep(self, trace, new_lambda, energy_initial, energy_final):
+        """
+        Add one perturbation step (new lambda and work in kcal/mol) to a work trace
+        """
+        if trace is not None:
+            trace["lambdas"].append(float(new_lambda))
+            trace["work_steps"].append(
+                (energy_final - energy_initial).value_in_unit(unit.kilocalories_per_mole)
+            )
+
     def drawSeed(self):
         """
         Draw a seed for OpenMM's own random number generators (integrator, velocities) from this
@@ -1766,6 +1797,7 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
         maxN=999,
         recordTraj=False,
         seed=None,
+        recordWorkTrace=False,
     ):
         """
         Initialise the object to be used for sampling NCMC-enhanced molecule insertion/deletion moves
@@ -1836,6 +1868,9 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
         seed : int or None
             Seed for the sampler's random number generator. If given, the integrator is also seeded from it, so the
             sampler must be created before the Context. Default None: unseeded
+        recordWorkTrace : bool
+            If True, store the lambda value and work (kcal/mol) of every perturbation step of each move in
+            tracked_variables["work_traces"]. Default False
         """
         # Initialise base class
         GCMCSphereSampler.__init__(
@@ -1899,6 +1934,9 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
         self.tracked_variables["accepted_delete_works"] = []
 
         self.tracked_variables["n_explosions"] = 0
+        self.record_work_trace = recordWorkTrace
+        if self.record_work_trace:
+            self.tracked_variables["work_traces"] = []
         self.tracked_variables["n_left_sphere"] = (
             0  # Number of moves rejected because the molecule left the sphere
         )
@@ -2010,6 +2048,7 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
         self.context.setPositions(new_positions)
         # Assign random velocities to the inserted atoms
         self.randomiseAtomVelocities(self.mol_atom_ids[insert_mol])
+        trace = self._startWorkTrace("insertion", insert_mol)
         # if self.record:
         #     current_state = self.simulation.context.getState(enforcePeriodicBox=True, getPositions=True)
         #     self.moveDCD.report(self.simulation, current_state)
@@ -2026,6 +2065,7 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
             state = self.context.getState(getEnergy=True)
             energy_final = state.getPotentialEnergy()
             protocol_work += energy_final - energy_initial
+            self._recordWorkStep(trace, self.lambdas[i + 1], energy_initial, energy_final)
             # Propagate the system
             try:
                 # self.ncmc_integrator.step(self.n_prop_steps_per_pert)
@@ -2145,6 +2185,7 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
             self.tracked_variables["outcome"].append("no_mol2del")
             self.tracked_variables["delete_works"].append(np.nan)
             return None
+        trace = self._startWorkTrace("deletion", delete_mol)
 
         # Start running perturbation and propagation kernels
         protocol_work = 0.0 * unit.kilocalories_per_mole
@@ -2159,6 +2200,7 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
             state = self.context.getState(getEnergy=True)
             energy_final = state.getPotentialEnergy()
             protocol_work += energy_final - energy_initial
+            self._recordWorkStep(trace, self.lambdas[-(2 + i)], energy_initial, energy_final)
             # if self.record:
             #     current_state = self.simulation.context.getState(enforcePeriodicBox=True, getPositions=True)
             #     self.moveDCD.report(self.simulation, current_state)
@@ -2768,6 +2810,7 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
         lambdas=None,
         recordTraj=False,
         seed=None,
+        recordWorkTrace=False,
     ):
         """
         Initialise the object to be used for sampling NCMC-enhanced molecule insertion/deletion moves
@@ -2825,6 +2868,9 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
         seed : int or None
             Seed for the sampler's random number generator. If given, the integrator is also seeded from it, so the
             sampler must be created before the Context. Default None: unseeded
+        recordWorkTrace : bool
+            If True, store the lambda value and work (kcal/mol) of every perturbation step of each move in
+            tracked_variables["work_traces"]. Default False
         """
         # Initialise base class
         GCMCSystemSampler.__init__(
@@ -2883,6 +2929,9 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
         self.tracked_variables["accepted_insert_works"] = []
         self.tracked_variables["accepted_delete_works"] = []
         self.tracked_variables["n_explosions"] = 0
+        self.record_work_trace = recordWorkTrace
+        if self.record_work_trace:
+            self.tracked_variables["work_traces"] = []
 
         self.integrator = integrator
         if seed is not None:
@@ -2972,6 +3021,7 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
         self.context.setPositions(new_positions)
         # Assign random velocities to the inserted atoms
         self.randomiseAtomVelocities(self.mol_atom_ids[insert_mol])
+        trace = self._startWorkTrace("insertion", insert_mol)
 
         # Start running perturbation and propagation kernels
         protocol_work = 0.0 * unit.kilocalories_per_mole
@@ -2993,6 +3043,7 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
             state = self.context.getState(getEnergy=True)
             energy_final = state.getPotentialEnergy()
             protocol_work += energy_final - energy_initial
+            self._recordWorkStep(trace, self.lambdas[i + 1], energy_initial, energy_final)
             # Propagate the system
             try:
                 self.integrator.step(self.n_prop_steps_per_pert)
@@ -3067,6 +3118,7 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
             self.tracked_variables["outcome"].append("no_mol2del")
             self.tracked_variables["delete_works"].append(np.nan)
             return None
+        trace = self._startWorkTrace("deletion", delete_mol)
 
         # Start running perturbation and propagation kernels
         protocol_work = 0.0 * unit.kilocalories_per_mole
@@ -3080,6 +3132,7 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
             state = self.context.getState(getEnergy=True)
             energy_final = state.getPotentialEnergy()
             protocol_work += energy_final - energy_initial
+            self._recordWorkStep(trace, self.lambdas[-(2 + i)], energy_initial, energy_final)
             # Propagate the system
             try:
                 self.integrator.step(self.n_prop_steps_per_pert)
