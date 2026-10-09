@@ -1841,13 +1841,18 @@ class NonequilibriumGCMCSphereSampler(GCMCSphereSampler):
             ), "Lambda series must start at 0 and end at 1"
             self.lambdas = lambdas
             self.n_pert_steps = len(self.lambdas) - 1
+            if nPertSteps not in (1, self.n_pert_steps):
+                self.logger.warning(
+                    "nPertSteps={} ignored: the supplied lambdas define {} perturbation steps".format(
+                        nPertSteps, self.n_pert_steps
+                    )
+                )
         else:
             # Otherwise, assume they are evenly distributed
             self.n_pert_steps = nPertSteps
             self.lambdas = np.linspace(0.0, 1.0, self.n_pert_steps + 1)
 
         self.maxN = maxN
-        self.n_pert_steps = nPertSteps
         self.n_prop_steps_per_pert = nPropStepsPerPert
         self.time_step = timeStep.in_units_of(unit.picosecond)
         self.protocol_time = (
@@ -2804,6 +2809,12 @@ class NonequilibriumGCMCSystemSampler(GCMCSystemSampler):
             ), "Lambda series must start at 0 and end at 1"
             self.lambdas = lambdas
             self.n_pert_steps = len(self.lambdas) - 1
+            if nPertSteps not in (1, self.n_pert_steps):
+                self.logger.warning(
+                    "nPertSteps={} ignored: the supplied lambdas define {} perturbation steps".format(
+                        nPertSteps, self.n_pert_steps
+                    )
+                )
         else:
             # Otherwise, assume they are evenly distributed
             self.n_pert_steps = nPertSteps
