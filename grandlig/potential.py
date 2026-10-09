@@ -41,7 +41,9 @@ def calc_mu_ex(
     matout="U_matrix.npy",
     pressure=None,
     turnOff=True,
-    platform=None
+    platform=None,
+    seed=None,
+    return_error=False,
 ):
     """
     Calculate the excess chemical potential of a molecule in a given system,
@@ -79,16 +81,24 @@ def calc_mu_ex(
         Decouple the molecule rather than couple
     platform : None or openmm.Platform
         Specify a platform to the run the simulation on. CUDA, OpenCL, CPU. Will try and use CUDA if None specifeid.
+    seed : int or None
+        If given, seeds the integrator and the initial velocities. Default None: unseeded
+    return_error : bool
+        If True, return the MBAR error estimate as well. Default False
 
     Returns
     -------
     dG : openmm.unit.Quantity
         Calculated free energy value
+    dG_err : openmm.unit.Quantity
+        MBAR error estimate of dG (only if return_error is True)
     """
     # Use the BAOAB integrator to sample the equilibrium distribution
     integrator = openmmtools.integrators.BAOABIntegrator(
         temperature, 1.0 / picosecond, 0.002 * picoseconds
     )
+    if seed is not None:
+        integrator.setRandomNumberSeed(int(seed))
     # Name the log file, if not already done
     if log_file is None:
         "dG.log"
@@ -128,7 +138,10 @@ def calc_mu_ex(
     # Create a simulation object
     simulation = Simulation(topology, system, integrator, platform)
     simulation.context.setPositions(positions)
-    simulation.context.setVelocitiesToTemperature(temperature)
+    if seed is None:
+        simulation.context.setVelocitiesToTemperature(temperature)
+    else:
+        simulation.context.setVelocitiesToTemperature(temperature, int(seed))
     simulation.context.setPeriodicBoxVectors(*box_vectors)
     print("Simulation created")
 
@@ -224,6 +237,8 @@ def calc_mu_ex(
     gcmc_mover.logger.info("Excess chemical potential = {}".format(dG))
     gcmc_mover.logger.info("Estimated error = {}".format(dG_err))
 
+    if return_error:
+        return dG, dG_err
     return dG
 
 

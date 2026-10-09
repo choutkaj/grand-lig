@@ -144,3 +144,50 @@ class TestPotential(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_calc_mu_ex_seed_and_error(tmp_path):
+    """
+    With a seed, calc_mu_ex is reproducible (Reference platform); return_error also returns the MBAR error
+    """
+    import numpy as np
+    from openmm import Vec3
+    from openmm.unit import kelvin, nanometers, Quantity, kilocalorie_per_mole
+
+    # One benzene in a 2.6 nm periodic box without solvent: fast, and the minimiser is trivial
+    pdb = PDBFile(utils.get_data_file(os.path.join("tests", "Benzene.pdb")))
+    xyz = np.array(pdb.positions.value_in_unit(nanometers))
+    modeller = Modeller(pdb.topology, Quantity(xyz - xyz.mean(axis=0) + 1.3, nanometers))
+    modeller.topology.setPeriodicBoxVectors([Vec3(2.6, 0, 0), Vec3(0, 2.6, 0), Vec3(0, 0, 2.6)] * nanometers)
+    ff = ForceField(utils.get_data_file(os.path.join("tests", "Benzene.xml")))
+
+    results = []
+    for k in range(2):
+        system = ff.createSystem(modeller.topology, nonbondedMethod=PME, nonbondedCutoff=1.0 * nanometers)
+        cwd = os.getcwd()
+        os.chdir(tmp_path)  # calc_mu_ex writes and removes a ghost file in the working directory
+        try:
+            results.append(
+                potential.calc_mu_ex(
+                    system=system,
+                    topology=modeller.topology,
+                    positions=modeller.positions,
+                    resname="L01",
+                    resid=0,
+                    box_vectors=modeller.topology.getPeriodicBoxVectors(),
+                    temperature=298 * kelvin,
+                    n_lambdas=3,
+                    n_samples=10,
+                    n_equil=5,
+                    log_file=str(tmp_path / f"mu_{k}.log"),
+                    matout=str(tmp_path / f"U_{k}.npy"),
+                    platform="Reference",
+                    seed=11,
+                    return_error=True,
+                )
+            )
+        finally:
+            os.chdir(cwd)
+    (dg_a, err_a), (dg_b, err_b) = results
+    assert dg_a.unit.is_compatible(kilocalorie_per_mole) and err_a.unit.is_compatible(kilocalorie_per_mole)
+    assert dg_a == dg_b and err_a == err_b
